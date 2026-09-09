@@ -8,26 +8,49 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 import psycopg2
 import psycopg2.extras
 import os
+import io
 import json
 import mimetypes
 import qrcode
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
 from werkzeug.utils import secure_filename
+from PIL import Image, ImageOps
+from collections import OrderedDict
+
+# دعم صور آيفون بصيغة HEIC/HEIF (الصيغة الافتراضية لكاميرا آيفون) حتى تُفتح
+# وتُحوَّل تلقائياً مثل أي صورة أخرى. إن لم تكن المكتبة مثبتة، يستمر الموقع
+# بالعمل بباقي الصيغ (JPG/PNG/WebP...) بدون مشاكل.
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:
+    pass
+
+# الحد الأقصى لأطول ضلع في صورة المنتج بعد المعالجة (بالبكسل). هذا يضمن أن
+# أي صورة يرفعها الأدمن - مهما كان حجمها الأصلي (مثلاً صورة كاميرا آيفون
+# الحقيقية بعدة ميجابكسل) - تُخزَّن بمقاس مناسب وخفيف يظهر بشكل ناعم وسريع
+# على كل الهواتف بدل أن تظهر ضخمة أو تفشل بالتحميل.
+PRODUCT_IMAGE_MAX_DIM = 1600
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "musab-phone-super-secret-key-2026")  # غيّرها في الإنتاج
 
 # ---------------------------------------------------------
 # رابط الاتصال بقاعدة بيانات PostgreSQL (مثل Neon أو Supabase)
-# يجب ضبط متغيّر البيئة DATABASE_URL قبل تشغيل الموقع، مثال:
+# مهم جداً: يجب ضبط متغيّر البيئة DATABASE_URL قبل تشغيل الموقع، ولا تضع
+# رابط الاتصال الحقيقي (بالباسورد) هنا مباشرة بالكود أبداً - أي شخص يشوف
+# الكود (مثلاً لو رُفع على GitHub أو انبعث كملف) يقدر يتصل بقاعدة بياناتك
+# مباشرة ويشوف/يعدّل/يحذف كل بيانات العملاء بدون المرور بالموقع إطلاقاً.
+# مثال على شكل الرابط الصحيح:
 #   postgresql://user:password@host/dbname?sslmode=require
 # ---------------------------------------------------------
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://neondb_owner:npg_x3a9ohjbCuKz@ep-odd-wind-aea2pu6n-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError(
         "لم يتم ضبط متغيّر البيئة DATABASE_URL. أضف رابط قاعدة بيانات PostgreSQL "
-        "(من Neon أو Supabase مثلاً) قبل تشغيل الموقع."
+        "(من Neon أو Supabase مثلاً) كمتغيّر بيئة قبل تشغيل الموقع - ولا تكتبه "
+        "أبداً مباشرة داخل الكود."
     )
 # بعض المزوّدين (مثل Heroku القديم) يعطون رابطاً يبدأ بـ postgres:// بدل postgresql://
 if DATABASE_URL.startswith("postgres://"):
@@ -44,11 +67,12 @@ ALLOWED_IMAGE_EXT = {
 }
 
 # ---------------------------------------------------------
-# إعداد موعد الحجز: بعد 11 يوماً من الآن الساعة 7:00 مساءً
+# إعداد موعد الحجز: تاريخ وساعة ثابتة بتوقيت ليبيا (UTC+2، بدون توقيت صيفي)
+# محددة صراحة بالمنطقة الزمنية حتى يبقى الموعد الرسمي صحيحاً دائماً بغض
+# النظر عن توقيت السيرفر المستضاف عليه الموقع (Render وغيره عادة UTC).
 # ---------------------------------------------------------
-RESERVATION_DEADLINE = (datetime.now() + timedelta(days=7)).replace(
-    hour=19, minute=0, second=0, microsecond=0
-)
+LIBYA_TZ = timezone(timedelta(hours=2))
+RESERVATION_DEADLINE = datetime(2027, 9, 9, 19, 0, 0, tzinfo=LIBYA_TZ)
 
 # ---------------------------------------------------------
 # ===== إعدادات دخول لوحة التحكم (عدّل هذي القيم قبل النشر) =====
@@ -370,10 +394,12 @@ TRANSLATIONS = {
         "nav_models": "المنتجات", "nav_growth": "الحجوزات", "nav_reserve": "الحجز",
         "nav_lookup": "استرجاع حجزي",
         "book_now": "احجز الآن",
-        "hero_badge": "🚀 حجوزات مسبقة محدودة",
-        "hero_title_pre": "احجز جهازك", "hero_title_high": "iPhone 18", "hero_title_post": "قبل أي أحد آخر",
-        "hero_sub": "مصعب فون يقدّم لك فرصة الحجز المسبق لأحدث إصدار من آيفون بأفضل الأسعار وأولوية استلام فور توفر الجهاز.",
+        "hero_badge": "🎉 أصبح متاحاً الآن",
+        "hero_title_pre": "iPhone 18", "hero_title_high": "متاح الآن", "hero_title_post": "في مصعب فون",
+        "hero_sub": "أعلنت الشركة رسمياً عن توفر أحدث إصدار من آيفون — احجز جهازك الآن بأفضل الأسعار وأولوية استلام.",
         "hero_cta1": "احجز جهازك الآن", "hero_cta2": "تصفح منتجات آبل الجديدة",
+        "availability_title": "🎉 آيفون 18 متاح الآن في مصعب فون!",
+        "availability_sub": "الشركة أعلنت رسمياً عن توفره — احجز جهازك الآن قبل نفاد الكمية.",
         "countdown_title": "⏳ ينتهي وقت الحجز خلال",
         "deadline_prefix": "الموعد النهائي:",
         "cd_day": "يوم", "cd_hour": "ساعة", "cd_min": "دقيقة", "cd_sec": "ثانية",
@@ -409,7 +435,7 @@ TRANSLATIONS = {
         "ph_choose_storage": "اختر السعة", "ph_notes": "أي تفاصيل إضافية ترغب بإخبارنا بها",
         "ph_custom_request": "مثال: أريد طلاء ذهبي 24 قيراط بالكامل مع شعار مخصص...",
         "btn_confirm": "تأكيد الحجز",
-        "footer_tagline": "وجهتك الأولى لحجز أحدث أجهزة آيفون بثقة وسهولة.",
+        "footer_tagline": "رقم 1 ف سوق الليبيي لمنتجات ابل🥇",
         "footer_quicklinks": "روابط سريعة", "footer_contact": "تواصل معنا",
         "footer_maintenance": "قسم الصيانة", "footer_whatsapp": "تواصل واتساب",
         "footer_sales": "قسم المبيعات",
@@ -429,10 +455,12 @@ TRANSLATIONS = {
         "nav_models": "Products", "nav_growth": "Bookings", "nav_reserve": "Reserve",
         "nav_lookup": "Find my booking",
         "book_now": "Book Now",
-        "hero_badge": "🚀 Limited Pre-Orders",
-        "hero_title_pre": "Reserve your", "hero_title_high": "iPhone 18", "hero_title_post": "before anyone else",
-        "hero_sub": "Musab Phone gives you the chance to pre-order the newest iPhone at the best prices, with priority pickup as soon as it's available.",
+        "hero_badge": "🎉 Now Available",
+        "hero_title_pre": "iPhone 18", "hero_title_high": "is now available", "hero_title_post": "at Musab Phone",
+        "hero_sub": "Apple officially announced the newest iPhone is here — reserve yours now at the best prices with priority pickup.",
         "hero_cta1": "Reserve now", "hero_cta2": "Browse Apple's new products",
+        "availability_title": "🎉 iPhone 18 is now available at Musab Phone!",
+        "availability_sub": "Officially announced — reserve yours now before stock runs out.",
         "countdown_title": "⏳ Booking closes in",
         "deadline_prefix": "Deadline:",
         "cd_day": "Days", "cd_hour": "Hours", "cd_min": "Min", "cd_sec": "Sec",
@@ -573,14 +601,30 @@ if not ADMIN_ONLY:
         products = conn.execute(
             "SELECT p.*, c.name_ar AS cat_ar, c.name_en AS cat_en FROM products p "
             "LEFT JOIN categories c ON c.id = p.category_id WHERE p.active = 1 "
-            "ORDER BY p.created_at DESC"
+            "ORDER BY c.name_ar NULLS LAST, p.created_at DESC"
         ).fetchall()
         conn.close()
+
+        lang = get_lang()
+
+        # تجميع منتجات الأدمن حسب القسم (بدل عرضها كلها مختلطة في شبكة
+        # واحدة): كل قسم يظهر بعنوانه الخاص وشبكة منتجاته تحته، ومنتجات
+        # بدون قسم محدد تُجمع في قسم "منتجات أخرى" بآخر الصفحة.
+        product_groups = OrderedDict()
+        for p in products:
+            key = p["category_id"] if p["category_id"] else 0
+            if key not in product_groups:
+                if p["category_id"]:
+                    title = p["cat_ar"] if lang == "ar" else (p["cat_en"] or p["cat_ar"])
+                else:
+                    title = "منتجات أخرى" if lang == "ar" else "Other Products"
+                product_groups[key] = {"title": title, "products": []}
+            product_groups[key]["products"].append(p)
+        product_groups = list(product_groups.values())
 
         # نسخة من الموديلات مُجهَّزة لجافاسكريبت: كل لون يصبح كائن
         # {id, name, file} بدل مجرّد نص، بحيث تُطابق الصورة الصحيحة دائماً
         # وتُترجم تلقائياً حسب لغة الموقع الحالية (عربي/إنجليزي).
-        lang = get_lang()
         models_for_js = []
         for m in MODELS:
             mm = dict(m)
@@ -610,6 +654,7 @@ if not ADMIN_ONLY:
             currency=CURRENCY,
             show_prices=SHOW_PRICES,
             products=products,
+            product_groups=product_groups,
         )
 
     @app.route("/reserve", methods=["POST"])
@@ -643,7 +688,7 @@ if not ADMIN_ONLY:
             errors.append("الرجاء اختيار سعة تخزين متاحة لهذا الموديل." if is_ar else "Please choose a storage option available for this model.")
         if m and m.get("is_vip") and len(custom_request) < 5:
             errors.append("الرجاء وصف تصميمك الخاص (VIP)." if is_ar else "Please describe your custom VIP design.")
-        if datetime.now() > RESERVATION_DEADLINE:
+        if datetime.now(LIBYA_TZ) > RESERVATION_DEADLINE:
             errors.append("عذراً، انتهى وقت استقبال الحجوزات." if is_ar else "Sorry, the booking window has closed.")
 
         if errors:
@@ -867,6 +912,31 @@ if not PUBLIC_ONLY:
         conn.close()
         return redirect(url_for("admin"))
 
+    @app.route("/admin/reset-all", methods=["POST"])
+    def admin_reset_all():
+        # تصفير كامل لكل الحجوزات (يُستخدم مرة واحدة قبل تسليم الموقع فعلياً
+        # للعميل، بعد الانتهاء من التجربة، حتى تبدأ الكمية من 100 والحجوزات
+        # من صفر أمام الزوار الحقيقيين). محمي بتأكيد كتابة العبارة بالضبط.
+        if not admin_required():
+            return redirect(url_for("admin"))
+        confirm_text = request.form.get("confirm", "").strip()
+        if confirm_text != "تصفير":
+            flash("لم يتم التصفير: يجب كتابة كلمة \"تصفير\" بالضبط للتأكيد.", "error")
+            return redirect(url_for("admin"))
+        conn = get_db()
+        conn.execute("DELETE FROM reservations")
+        conn.commit()
+        conn.close()
+        # حذف صور QR التجريبية المولّدة سابقاً من على القرص (إن وُجدت)
+        try:
+            for fname in os.listdir(QR_DIR):
+                if fname.lower().endswith(".png"):
+                    os.remove(os.path.join(QR_DIR, fname))
+        except Exception:
+            pass
+        flash("تم تصفير كل الحجوزات بنجاح. الموقع جاهز الآن لاستقبال حجوزات حقيقية.", "success")
+        return redirect(url_for("admin"))
+
     @app.route("/admin/status/<int:res_id>", methods=["POST"])
     def admin_update_status(res_id):
         if not admin_required():
@@ -941,6 +1011,37 @@ if not PUBLIC_ONLY:
         conn.close()
         return redirect(url_for("admin_catalog"))
 
+    def process_product_image(raw_bytes):
+        """يفتح صورة المنتج (مهما كانت صيغتها الأصلية - JPG/PNG/WebP/HEIC..)،
+        يصحّح اتجاهها حسب بيانات EXIF (لأن كثير من صور كاميرات الهواتف تُحفظ
+        مستلقية ثم تُدار عرضاً فقط عبر وسم دوران)، يصغّرها إلى مقاس مناسب لكل
+        الهواتف والشاشات، ثم يعيدها بصيغة موحّدة (JPEG أو PNG إن كانت تحتوي
+        شفافية) جاهزة للعرض بسرعة ونعومة. يرجع None إذا تعذّرت قراءة الصورة."""
+        try:
+            img = Image.open(io.BytesIO(raw_bytes))
+            img.load()
+        except Exception:
+            return None
+
+        img = ImageOps.exif_transpose(img)
+
+        has_alpha = img.mode in ("RGBA", "LA") or (
+            img.mode == "P" and "transparency" in img.info
+        )
+
+        if max(img.size) > PRODUCT_IMAGE_MAX_DIM:
+            img.thumbnail((PRODUCT_IMAGE_MAX_DIM, PRODUCT_IMAGE_MAX_DIM), Image.LANCZOS)
+
+        buf = io.BytesIO()
+        if has_alpha:
+            img = img.convert("RGBA")
+            img.save(buf, format="PNG", optimize=True)
+            return buf.getvalue(), "image/png", "png"
+        else:
+            img = img.convert("RGB")
+            img.save(buf, format="JPEG", quality=85, optimize=True)
+            return buf.getvalue(), "image/jpeg", "jpg"
+
     @app.route("/admin/products/add", methods=["POST"])
     def admin_add_product():
         if not admin_required():
@@ -962,9 +1063,18 @@ if not PUBLIC_ONLY:
                 if len(raw) > 8 * 1024 * 1024:
                     flash("حجم الصورة كبير جداً (الحد الأقصى 8 ميجابايت).", "error")
                 else:
-                    image_filename = secure_filename(file.filename)
-                    image_bytes = psycopg2.Binary(raw)
-                    image_mime = file.mimetype or mimetypes.guess_type(image_filename)[0] or "image/jpeg"
+                    processed = process_product_image(raw)
+                    if processed is None:
+                        flash(
+                            "تعذّرت معالجة هذه الصورة. جرّب صورة أخرى بصيغة JPG أو PNG "
+                            "(أو تأكد أنها ليست تالفة).",
+                            "error",
+                        )
+                    else:
+                        image_data, image_mime, out_ext = processed
+                        base_name = file.filename.rsplit(".", 1)[0] if "." in file.filename else file.filename
+                        image_filename = secure_filename(f"{base_name}.{out_ext}")
+                        image_bytes = psycopg2.Binary(image_data)
             else:
                 flash("صيغة الصورة غير مدعومة.", "error")
 
@@ -1003,6 +1113,18 @@ if not PUBLIC_ONLY:
         return redirect(url_for("admin_catalog"))
 
 
+# تهيئة قاعدة البيانات (إنشاء الجداول أول مرة + أي تحديثات عليها) تصير هنا
+# على مستوى الملف مباشرة، وليس فقط داخل "if __name__ == '__main__'" - لأن
+# سيرفرات الإنتاج مثل gunicorn تستورد هذا الملف كوحدة (import) ولا تشغّله
+# كبرنامج رئيسي أبداً، فلو بقيت التهيئة حصراً داخل ذاك الشرط، ما كانت
+# لتُنفَّذ إطلاقاً على الاستضافة وتبقى قاعدة البيانات فارغة/غير مهيأة.
+init_db()
+
+
 if __name__ == "__main__":
-    init_db()
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    # وضع debug=True يكشف تفاصيل تقنية حساسة عن الكود لأي زائر عند حدوث
+    # خطأ، وأحياناً يسمح بتشغيل أوامر على السيرفر - لازم يكون مطفياً دائماً
+    # بالإنتاج. نتحكم فيه بمتغيّر بيئة اختياري FLASK_DEBUG بدل ما يكون
+    # مفعّل دائماً بالكود (القيمة الافتراضية هنا False/مطفي).
+    debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
+    app.run(debug=debug_mode, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

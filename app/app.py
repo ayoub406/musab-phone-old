@@ -84,7 +84,7 @@ SOCIAL_LINKS = {
 
 CURRENCY = "د.ل"
 SHOW_PRICES = False
-TOTAL_STOCK = 100
+TOTAL_STOCK = 200
 
 # ---------------------------------------------------------
 # قاعدة البيانات

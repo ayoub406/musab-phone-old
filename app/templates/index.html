@@ -17,7 +17,7 @@
     })();
   </script>
 </head>
-<body>
+<body data-currency="{{ currency }}">
 {% import "_logo.html" as L %}
 {% import "_social.html" as S %}
 
@@ -89,31 +89,23 @@
         </span>
     <h3>
   {% if lang == "ar" %}
-    {{ "كن أول الحاصلين على آيفون<br>18 برو - برو ماكس" | safe }}
+    {{ "آيفون 18 برو - برو ماكس<br>متاح الآن!" | safe }}
   {% else %}
-    {{ "Be the first to get the iPhone<br>18 Pro - Pro Max" | safe }}
+    {{ "iPhone 18 Pro - Pro Max<br>now available!" | safe }}
   {% endif %}
 </h3>
 
-        <p>{{ "احجز الآن وكن من أوائل المستلمين فور توفر الجهاز" if lang == "ar" else "Reserve now and be among the first to receive it" }}</p>
+        <p>{{ "احجز الآن قبل نفاد الكمية" if lang == "ar" else "Reserve now before stock runs out" }}</p>
         <span class="promo-banner-cta">{{ t.hero_cta1 }} ←</span>
       </a>
     </div>
   </section>
 
-  <!-- ===== العداد التنازلي ===== -->
+  <!-- ===== إعلان التوفر (بدّل العداد التنازلي) ===== -->
   <section class="countdown-section">
     <div class="container">
-      <h2>{{ t.countdown_title }}</h2>
-      <p class="deadline-text">{{ t.deadline_prefix }} {{ deadline_readable }}</p>
-
-      <div id="countdown-wrap" class="countdown" data-deadline="{{ deadline_iso }}"
-           data-expired-text="{{ t.countdown_expired }}">
-        <div class="box"><span class="num" id="cd-days">00</span><span class="label">{{ t.cd_day }}</span></div>
-        <div class="box"><span class="num" id="cd-hours">00</span><span class="label">{{ t.cd_hour }}</span></div>
-        <div class="box"><span class="num" id="cd-minutes">00</span><span class="label">{{ t.cd_min }}</span></div>
-        <div class="box"><span class="num" id="cd-seconds">00</span><span class="label">{{ t.cd_sec }}</span></div>
-      </div>
+      <h2>{{ t.availability_title }}</h2>
+      <p class="deadline-text">{{ t.availability_sub }}</p>
     </div>
   </section>
 
@@ -197,29 +189,65 @@
     <div class="container">
       <div class="section-title">
         <h2>{{ "تصفح منتجات آبل الجديدة 2026" if lang == "ar" else "Browse Apple's New Products 2026" }}</h2>
-        {% if not products %}
+        {% if not product_groups %}
         <p>{{ "سيتم إضافة المنتجات قريباً من قبل فريقنا" if lang == "ar" else "Products will be added soon by our team" }}</p>
         {% endif %}
       </div>
-      {% if products %}
-      <div class="gallery-grid">
-        {% for p in products %}
-        <div class="gallery-card">
-          <div class="gallery-img-wrap">
-            {% if p.image_mime %}
-            <img src="{{ url_for('product_image', prod_id=p.id) }}" alt="{{ p.name }}" loading="lazy"
-                 onerror="this.closest('.gallery-img-wrap').classList.add('img-missing');">
-            {% else %}
-            <div class="gallery-img-wrap img-missing"></div>
-            {% endif %}
+      {% if product_groups %}
+      {% for group in product_groups %}
+      <div class="product-category-group">
+        <h3 class="product-category-title">
+          <span>{{ group.title }}</span>
+          <span class="product-category-count">{{ group.products|length }}</span>
+        </h3>
+        <div class="gallery-grid product-grid">
+          {% for p in group.products %}
+          <div class="gallery-card product-card js-product-card"
+               data-name="{{ p.name }}"
+               data-desc="{{ p.description or '' }}"
+               data-cat="{{ (p.cat_ar if lang == 'ar' else (p.cat_en or p.cat_ar)) or '' }}"
+               data-price="{{ ('{:,.0f}'.format(p.price) + ' ' + currency) if p.price else '' }}"
+               data-img="{{ url_for('product_image', prod_id=p.id) if p.image_mime else '' }}">
+            <button type="button" class="product-img-wrap js-product-open{{ '' if p.image_mime else ' img-missing' }}" aria-label="{{ 'عرض تفاصيل المنتج' if lang == 'ar' else 'View product details' }}">
+              {% if p.image_mime %}
+              <img src="{{ url_for('product_image', prod_id=p.id) }}" alt="{{ p.name }}" loading="lazy"
+                   onerror="this.closest('.product-img-wrap').classList.add('img-missing');">
+              {% endif %}
+              <span class="product-zoom-hint">🔍</span>
+            </button>
+            <div class="product-info">
+              <div class="product-name">{{ p.name }}{% if p.cat_ar %}<span class="product-cat">{{ p.cat_ar if lang == 'ar' else (p.cat_en or p.cat_ar) }}</span>{% endif %}</div>
+              {% if p.description %}
+              <p class="product-desc">{{ p.description }}</p>
+              {% endif %}
+              {% if p.price %}
+              <div class="product-price">{{ "{:,.0f}".format(p.price) }} {{ currency }}</div>
+              {% endif %}
+            </div>
           </div>
-          <div class="gallery-caption">{{ p.name }}{% if show_prices and p.price %} - {{ "{:,.0f}".format(p.price) }} {{ currency }}{% endif %}</div>
+          {% endfor %}
         </div>
-        {% endfor %}
       </div>
+      {% endfor %}
       {% endif %}
     </div>
   </section>
+
+  <!-- ===== نافذة تفاصيل المنتج (تفتح عند الضغط على صورة المنتج) ===== -->
+  <div class="product-modal-overlay" id="product-modal-overlay">
+    <div class="product-modal" role="dialog" aria-modal="true">
+      <button type="button" class="product-modal-close" id="product-modal-close" aria-label="close">×</button>
+      <div class="product-modal-img-wrap" id="product-modal-img-wrap">
+        <img id="product-modal-img" src="" alt="">
+      </div>
+      <div class="product-modal-body">
+        <div class="product-modal-cat" id="product-modal-cat"></div>
+        <h3 id="product-modal-name"></h3>
+        <p id="product-modal-desc"></p>
+        <div class="product-modal-price" id="product-modal-price"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- ===== نموذج الحجز ===== -->
   <section class="reserve-section" id="reserve">
@@ -342,7 +370,7 @@
             <li>🛠️ {{ t.footer_maintenance }}: {{ maintenance_phone }}</li>
             <li>💬 <a href="https://wa.me/{{ whatsapp_number }}" target="_blank" rel="noopener">{{ t.footer_whatsapp }}</a></li>
             <li>✉️ info@musabphone.com</li>
-            <li>📍 {{ "بنغازي الفويهات شارع الببسي شارع جنة الفواكة" if lang == "ar" else "Libya" }}</li>
+            <li>📍 {{ "الفويهات شارع البيبسي بجانب السفارة السويدية سابقا" if lang == "ar" else "Libya" }}</li>
           </ul>
         </div>
       </div>
@@ -365,5 +393,6 @@
   <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
   <script src="{{ url_for('static', filename='js/model-select.js') }}"></script>
   <script src="{{ url_for('static', filename='js/chart-growth.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/product-modal.js') }}"></script>
 </body>
 </html>

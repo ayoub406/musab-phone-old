@@ -30,6 +30,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function fetchStock() {
+    if (document.hidden) return; // لا داعي للتحديث لو التاب مو مفتوح فعلياً (يوفّر حصة نقل البيانات)
     fetch(endpoint)
       .then((res) => res.json())
       .then(applyStock)
@@ -39,5 +40,8 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   fetchStock();
-  setInterval(fetchStock, 8000); // تحديث كل 8 ثوانٍ
+  setInterval(fetchStock, 30000); // تحديث كل 30 ثانية بدل 8 (يقلّل استهلاك حصة النقل الشهرية بشكل كبير)
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) fetchStock(); // حدّث فوراً لما الزائر يرجع للتاب
+  });
 });

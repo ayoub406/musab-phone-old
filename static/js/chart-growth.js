@@ -28,7 +28,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function refresh() {
-    if (!endpoint) return;
+    if (!endpoint || document.hidden) return; // لا تحديث لو التاب مخفي (يوفّر حصة نقل البيانات)
     fetch(endpoint)
       .then(function (res) { return res.json(); })
       .then(function (data) {
@@ -47,5 +47,8 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   refresh();
-  setInterval(refresh, 8000); // يتزامن مع تحديث عداد المخزون
+  setInterval(refresh, 30000); // تحديث كل 30 ثانية بدل 8 (يقلّل استهلاك حصة النقل الشهرية بشكل كبير)
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refresh(); // حدّث فوراً لما الزائر يرجع للتاب
+  });
 });
